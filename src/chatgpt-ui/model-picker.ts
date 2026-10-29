@@ -9,7 +9,8 @@ export const CHATGPT_EFFORT_CONTROL_VARIANTS = {
   dropdown: 'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
   // 2026-09-25 (2933410): power picker inside the markdown composer.
   codexReasoning: 'button[data-codex-intelligence-trigger="true"][data-composer-navigation-target="reasoning"][aria-haspopup="menu"]',
-  // Captured 2026-10-29: inline reasoning trigger omits both older tone/trigger attributes.
+  // 2026-10-29 (#924): inline trigger drops tone/test ID/codex trigger; its label is localized.
+  // Same structural selector independently proposed by @kaimiller144-web (#927) and @nofihq (#928).
   inlineReasoning: 'button[data-composer-navigation-target="reasoning"][data-selected-reasoning-effort][aria-haspopup="menu"]',
 } as const;
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = Object.values(CHATGPT_EFFORT_CONTROL_VARIANTS).join(", ");
