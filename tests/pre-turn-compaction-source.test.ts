@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import { encodeCompactionSummary } from "../src/responses/compaction";
-import { rememberCompactionContinuation, currentNativeTask } from "../src/adapters/chatgpt-web/compaction-continuation";
+import { rememberCompactionContinuation, restoreCompactionTaskMessages } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { extractChatGptCompactionSourceRevision, extractChatGptTurnIdentity, extractChatGptTurnUserRevision,
   chatGptTurnUserRevisionHistory } from "../src/adapters/chatgpt-web/environment";
 
@@ -43,7 +43,8 @@ test("a new turn can compact a verified previous-turn checkpoint after native hi
   // as a newly authorized ordinary turn or fabricates a new native goal instruction.
   const ordinary = f.parse(input);
   expect(() => extractChatGptTurnUserRevision(ordinary)).toThrow("current-turn user message");
-  expect(currentNativeTask(ordinary, extractChatGptTurnIdentity(ordinary), chatGptTurnUserRevisionHistory(ordinary))).toBeUndefined();
+  expect(restoreCompactionTaskMessages(ordinary, extractChatGptTurnIdentity(ordinary), chatGptTurnUserRevisionHistory(ordinary))
+    .some(message => message.role === "user" && message.content === f.goal.content)).toBe(false);
   const fresh = { ...f.goal, id: "fresh_goal", content: "Measure the next distinct research milestone.",
     internal_chat_message_metadata_passthrough: { turn_id: "next", content_item_kinds: ["goal.internal_context"] } };
   expect(extractChatGptCompactionSourceRevision(f.compact([...input, fresh])).itemId).toBe(fresh.id);
@@ -51,7 +52,9 @@ test("a new turn can compact a verified previous-turn checkpoint after native hi
   rememberCompactionContinuation(compact, extractChatGptTurnIdentity(compact), [source], "New pre-turn checkpoint");
   const replaced = [{ type: "compaction", encrypted_content: encodeCompactionSummary("New pre-turn checkpoint") }, fresh];
   expect(extractChatGptTurnUserRevision(f.parse(replaced))).toBe(fresh.content);
-  expect(currentNativeTask(f.parse(replaced), extractChatGptTurnIdentity(f.parse(replaced)), chatGptTurnUserRevisionHistory(f.parse(replaced)))?.message.content).toBe(fresh.content);
+  const resumed = f.parse(replaced);
+  expect(restoreCompactionTaskMessages(resumed, extractChatGptTurnIdentity(resumed), chatGptTurnUserRevisionHistory(resumed))
+    .filter(message => message.role === "user" && message.content === fresh.content)).toHaveLength(1);
   // An existing current-turn checkpoint must not roll back to an older turn's summary.
   expect(() => extractChatGptCompactionSourceRevision(f.compact(input))).toThrow("requires a source user message");
 });
