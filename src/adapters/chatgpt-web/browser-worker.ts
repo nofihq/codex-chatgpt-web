@@ -85,7 +85,9 @@ import {
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
   readChatGptEffortSnapshot,
+  readChatGptModelControlLabel,
 } from "../../chatgpt-ui/model-picker";
+import { ChatGptModelAvailabilityObserver } from "./model-availability";
 import { loginVerificationMarkerPath } from "../../browser-login";
 import {
   connectLauncherBrowserHost,
@@ -2387,8 +2389,10 @@ export class ChatGptBrowserWorker {
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     trackUsage = false,
     modelFamily?: "5.6" | "6",
+    availability?: ChatGptModelAvailabilityObserver,
   ): Promise<SelectedChatGptWebModelMode> {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
+    availability?.setMode(modelFamily ?? "5.6", mode.effort);
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
     const uiEffortIndex = mode.uiEffortIndex;
@@ -2521,7 +2525,7 @@ export class ChatGptBrowserWorker {
     const selectedMode: SelectedChatGptWebModelMode = {
       ...mode,
       ...(modelFamily ? { modelFamily } : {}),
-      selection: { url: selectionUrl, label: (await currentEffort.innerText()).trim() },
+      selection: { url: selectionUrl, label: await readChatGptModelControlLabel(currentEffort) },
     };
     await this.assertSelectedEffort(page, selectedMode, false);
     const confirmation = await activateChatGptEffortMenu(page, currentEffort);
@@ -2553,7 +2557,7 @@ export class ChatGptBrowserWorker {
       throw chatGptModelControlUnavailableAdapterError("ChatGPT changed the selected model's browser surface before submission");
     }
     const control = controls.first();
-    if ((await control.innerText()).trim() !== mode.selection.label
+    if (await readChatGptModelControlLabel(control) !== mode.selection.label
       || await control.getAttribute("aria-expanded") !== "false"
       || !await composer.isEditable()) {
       throw chatGptModelControlUnavailableAdapterError(
@@ -2567,7 +2571,7 @@ export class ChatGptBrowserWorker {
       } finally {
         await page.keyboard.press("Escape");
       }
-      if (page.url() !== mode.selection.url || (await control.innerText()).trim() !== mode.selection.label
+      if (page.url() !== mode.selection.url || await readChatGptModelControlLabel(control) !== mode.selection.label
         || await control.getAttribute("aria-expanded") !== "false" || !await composer.isEditable()) {
         throw chatGptModelControlUnavailableAdapterError("ChatGPT changed the model while checking its family before submission");
       }
@@ -5111,6 +5115,7 @@ export class ChatGptBrowserWorker {
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
     let diagnosticCompleted = false;
+    let modelAvailability: ChatGptModelAvailabilityObserver | undefined;
     const usageWrites: Promise<void>[] = [];
     const originalAbortSignal = turn.abortSignal;
     const rejectionAbort = new AbortController();
@@ -5239,6 +5244,10 @@ export class ChatGptBrowserWorker {
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
       diagnosticPage = page;
+      modelAvailability = new ChatGptModelAvailabilityObserver(
+        stagingFamily ?? "5.6", stagingMode.effort, error => rejectionAbort.abort(error),
+      );
+      modelAvailability.attach(page);
       await streamDiagnostics.attach(page);
       const rebindLauncherPage = async (
         attempt: number,
@@ -5294,6 +5303,7 @@ export class ChatGptBrowserWorker {
         turnConnection = connection.browser;
         page = connection.page;
         diagnosticPage = page;
+        modelAvailability?.attach(page);
         await streamDiagnostics.attach(page);
         console.warn(
           `[chatgpt-web] browser turn ${turn.traceId} rebound its existing launcher page after a stalled DOM probe`,
@@ -5393,6 +5403,7 @@ export class ChatGptBrowserWorker {
           checkpoint => diagnostics.capture(page, checkpoint),
           trackUsage,
           stagingFamily,
+          modelAvailability,
         )
       );
       let mode = await this.selectInitialModelAndEffort(
@@ -5476,6 +5487,7 @@ export class ChatGptBrowserWorker {
               undefined,
               { onSubmitted: recordStageUsage, onSendActivated: async () => {
                 await this.assertSelectedEffort(page, mode);
+                modelAvailability?.dispose();
                 submissionRejection.begin(page);
                 streamDiagnostics.begin();
                 await submissionRejection.captureAlertBaseline();
@@ -5559,6 +5571,7 @@ export class ChatGptBrowserWorker {
               checkpoint => diagnostics.capture(page, `final-part-${checkpoint}`),
               trackUsage,
               turn.modelFamily,
+              modelAvailability,
             ),
           );
           await diagnostics.capture(page, "final-part-effort-selected");
@@ -5619,6 +5632,7 @@ export class ChatGptBrowserWorker {
                 checkpoint => diagnostics.capture(page, checkpoint),
                 trackUsage,
                 turn.modelFamily,
+                modelAvailability,
               );
               submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt, [], prepared.turnToken, compactionSubmissionId);
             },
@@ -5650,6 +5664,7 @@ export class ChatGptBrowserWorker {
             return turn.onSubmitted?.();
           }, onSendActivated: async () => {
             await this.assertSelectedEffort(page, mode);
+            modelAvailability?.dispose();
             console.info(`[chatgpt-web] final_submission_prepared ${JSON.stringify({
               traceId: turn.traceId, modelFamily: mode.modelFamily, effort: mode.effort,
               parts: prepared.multipart?.parts.length ?? 1,
@@ -6066,6 +6081,7 @@ export class ChatGptBrowserWorker {
       throw error;
     } finally {
       diagnostics.finish(diagnosticCompleted ? "completed" : "failed");
+      modelAvailability?.dispose();
       submissionRejection.dispose();
       await streamDiagnostics.dispose();
       await Promise.all(usageWrites);
