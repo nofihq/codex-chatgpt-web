@@ -1156,6 +1156,8 @@ interface ChatGptSubmissionDomState {
   turnIdentities: string[];
   userIdentities: string[];
   responseIdentities: string[];
+  /** Identities observed in this document, including fully virtualized history. */
+  observedTurnIdentities?: string[];
 }
 
 interface ChatGptSubmissionDomCache {
@@ -2745,7 +2747,7 @@ export class ChatGptBrowserWorker {
   ): Promise<ChatGptSubmissionDomState> {
     throwIfPromptAttachmentAborted(signal);
     const observed = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(page.evaluate(options => {
-      type ObserverState = { id: string; revision: number; observer: MutationObserver };
+      type ObserverState = { id: string; revision: number; observer: MutationObserver; observedTurns?: Set<string> };
       const scope = globalThis as typeof globalThis & {
         __CODEX_WEB_GPT_TURN_OBSERVER__?: ObserverState;
       };
@@ -2814,6 +2816,13 @@ export class ChatGptBrowserWorker {
         if (group.querySelector("[data-user-message-bubble]")) userIdentities.push(user);
         if (group.querySelector('[data-conversation-role="assistant"], [data-chatgpt-agent-turn-start]')) responseIdentities.push(assistant);
       });
+      // Retained documents outlive their helper processes. Entire historical
+      // groups can disappear before the next Send and remount alongside its new
+      // group. Remember only identities actually observed in this same document;
+      // a fresh baseline copies them before Send, so future competing groups
+      // remain new and are still rejected. Navigation creates a fresh global.
+      const observedTurns = observerState.observedTurns ??= new Set<string>();
+      for (const identity of turnIdentities) observedTurns.add(identity);
       return {
         key: observerKey,
         snapshot: {
@@ -2823,6 +2832,7 @@ export class ChatGptBrowserWorker {
           turnIdentities,
           userIdentities,
           responseIdentities,
+          observedTurnIdentities: [...observedTurns],
         },
       };
     }, {
@@ -2969,7 +2979,7 @@ export class ChatGptBrowserWorker {
     // A completed stage can be entirely unmounted at this point. Remember its
     // verified identities so remounting it cannot acknowledge this next Send.
     baseline.initialTurnIdentities = [...new Set([
-      ...state.turnIdentities,
+      ...(state.observedTurnIdentities ?? state.turnIdentities),
       ...acknowledgedStages.flatMap(stage => stage.identities.flatMap(identity => identity.startsWith("group:assistant:")
         ? [identity, `group:user:${identity.slice("group:assistant:".length)}`] : [identity])),
     ])];
